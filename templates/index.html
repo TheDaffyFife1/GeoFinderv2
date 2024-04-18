@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GeoFinder</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css"/>
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+    <style>
+        #map { height: 500px; }
+    </style>
+</head>
+<body>
+    <h1>GeoFinder v2</h1>
+    <form id="uploadForm" enctype="multipart/form-data">
+        <input type="file" name="file" id="file" accept=".csv" required>
+        <button type="button" onclick="uploadFile()">Cargar y previsualizar columnas</button>
+        <div id="columnas">
+            <!-- Los checkboxes para seleccionar columnas se generarán aquí -->
+        </div>
+        <button type="button" onclick="submitForm()">Geolocalizar y Mostrar en Mapa</button>
+    </form>
+    
+    <div id="map"></div>
+<button onclick="exportarDatos(true)">Exportar Todos los Datos</button>
+<button onclick="exportarDatos(false)">Exportar Datos dentro del Polígono</button>
+
+    <script>
+        var map = L.map('map').setView([20.9661, -89.6233], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        var drawnItems = new L.FeatureGroup();
+        map.addLayer(drawnItems);
+        var drawControl = new L.Control.Draw({
+            edit: {
+                featureGroup: drawnItems
+            },
+            draw: {
+                polygon: true,
+                polyline: false,
+                rectangle: false,
+                circle: false,
+                marker: false,
+                circlemarker: false
+            }
+        });
+        map.addControl(drawControl);
+
+        map.on(L.Draw.Event.CREATED, function (e) {
+            var type = e.layerType,
+                layer = e.layer;
+            if (type === 'polygon') {
+                drawnItems.addLayer(layer);
+                var bounds = layer.getBounds();
+                map.fitBounds(bounds);
+                filterMarkers(bounds);
+            }
+        });
+
+        map.on('draw:deleted', function () {
+            resetMarkers();
+        });
+
+        var allMarkers = [];
+
+        function uploadFile() {
+            const formData = new FormData();
+            formData.append('file', document.getElementById('file').files[0]);
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData,
+            })
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('columnas');
+                container.innerHTML = '';
+                if (data.columns) {
+                    data.columns.forEach(column => {
+                        const label = document.createElement('label');
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.name = 'columns';
+                        checkbox.value = column;
+                        label.appendChild(checkbox);
+                        label.appendChild(document.createTextNode(column));
+                        container.appendChild(label);
+                        container.appendChild(document.createElement('br'));
+                    });
+                } else {
+                    container.textContent = 'No se pudieron cargar las columnas, intente de nuevo.';
+                }
+            })
+            .catch(error => console.error('Error al cargar el archivo:', error));
+        }
+
+        function submitForm() {
+            const formData = new FormData(document.getElementById('uploadForm'));
+            const fileInput = document.getElementById('file');
+            formData.append('file', fileInput.files[0]);
+            document.querySelectorAll('#columnas input[type=checkbox]:checked').forEach(checkbox => {
+                formData.append('columns', checkbox.value);
+            });
+
+            fetch('/geolocalizar', {
+                method: 'POST',
+                body: formData,
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.error) {
+                    alert(data.error);
+                } else {
+                    displayMap(data);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+        }
+
+        function displayMap(locations) {
+    locations.forEach(function(location) {
+        var popupContent = '<b>Nombre:</b> ' + location.nombre_completo + '<br>' +
+                           '<b>Dirección:</b> ' + location.direccion + '<br>' +
+                           '<b>Latitud:</b> ' + location.latitud + '<br>' +
+                           '<b>Longitud:</b> ' + location.longitud;
+
+        var marker = L.marker([location.latitud, location.longitud]).bindPopup(popupContent);
+        
+        // Almacena los datos adicionales en el marcador, si es necesario más adelante
+         marker.data = {
+            nombre_completo: location.nombre_completo,
+            direccion: location.direccion,
+            latitud: location.latitud,
+            longitud: location.longitud
+        };
+        
+        allMarkers.push(marker);
+        marker.addTo(map);
+    });
+}
+
+        function filterMarkers(bounds) {
+            allMarkers.forEach(function(marker) {
+                if (bounds.contains(marker.getLatLng())) {
+                    marker.addTo(map);
+                } else {
+                    map.removeLayer(marker);
+                }
+            });
+        }
+
+        function resetMarkers() {
+            allMarkers.forEach(function(marker) {
+                marker.addTo(map);
+            });
+        }
+        function exportarDatos(sinPoligono) {
+        let datos = allMarkers.map(marker => marker.data);
+
+
+    let dataToSend = { datos };
+    if (!sinPoligono) {
+        // Asumiendo que tienes la última capa del polígono disponible
+        let lastPolygon = drawnItems.getLayers()[drawnItems.getLayers().length - 1];
+        if (lastPolygon) {
+            let bounds = lastPolygon.getBounds();
+            dataToSend.bounds = {
+                north: bounds.getNorth(),
+                south: bounds.getSouth(),
+                east: bounds.getEast(),
+                west: bounds.getWest()
+            };
+        }
+    }
+
+    fetch('/exportar?sin_poligono=' + sinPoligono, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(dataToSend)
+    }).then(response => response.blob())
+    .then(blob => {
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "datos_geolocalizados.csv";
+        document.body.appendChild(a); // Append the anchor tag and remove it after automatic click
+        a.click();
+        a.remove();
+    })
+    .catch(error => console.error('Error al exportar los datos:', error));
+}
+
+    </script>
+</body>
+</html>
